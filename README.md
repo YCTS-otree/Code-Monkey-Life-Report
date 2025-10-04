@@ -1,7 +1,5 @@
 # Code-Monkey-Life-Report
 
-![Banner](https://img.shields.io/badge/Programmer%27s-Day-2025-orange?style=flat-square)
-
 > 用 Python 和多语言统计工具生成属于你的年度代码成就报告！  
 > 每一行代码都被记录，每一次敲击都被收藏。为 10 月 24 日程序员节准备的彩蛋神器 🥳
 
