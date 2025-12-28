@@ -63,10 +63,11 @@ def get_language(filename):
             return lang
     return None
 
-def collect_stats(root_dir):
+def collect_stats(root_dir, year=None):
     project_stats = {}
     lang_stats = defaultdict(lambda: {'files': 0, 'size': 0, 'lines': 0})
     earliest_project_time = float('inf')
+    latest_project_time = 0
 
     for project_name in os.listdir(root_dir):
         project_path = os.path.join(root_dir, project_name)
@@ -75,6 +76,7 @@ def collect_stats(root_dir):
 
         files_info = []
         earliest_file_time = float('inf')
+        latest_file_time = 0
 
         for dirpath, _, filenames in os.walk(project_path):
             if not INCLUDE_HIDDEN and is_hidden(dirpath): continue
@@ -86,6 +88,9 @@ def collect_stats(root_dir):
 
                 stat = os.stat(filepath)
                 create_time = stat.st_ctime
+                if year:
+                    if datetime.datetime.fromtimestamp(create_time).year != year:
+                        continue
                 size = stat.st_size
 
                 files_info.append({
@@ -96,6 +101,7 @@ def collect_stats(root_dir):
                     'ctime': create_time
                 })
                 earliest_file_time = min(earliest_file_time, create_time)
+                latest_file_time = max(latest_file_time, create_time)
 
         if MERGE_SIMILAR_FILES:
             merged = {}
@@ -104,6 +110,9 @@ def collect_stats(root_dir):
                 if base not in merged or merged[base]['ctime'] < f['ctime']:
                     merged[base] = f
             files_info = list(merged.values())
+
+        if not files_info:
+            continue
 
         total_size = sum(f['size'] for f in files_info)
         total_lines = sum(count_code_lines(f['path']) for f in files_info)
@@ -119,8 +128,14 @@ def collect_stats(root_dir):
             'earliest_file_time': earliest_file_time
         }
         earliest_project_time = min(earliest_project_time, earliest_file_time)
+        latest_project_time = max(latest_project_time, latest_file_time)
 
-    return project_stats, lang_stats, earliest_project_time
+    if earliest_project_time == float('inf'):
+        earliest_project_time = None
+    if latest_project_time == 0:
+        latest_project_time = None
+
+    return project_stats, lang_stats, earliest_project_time, latest_project_time
 
     
 
@@ -187,23 +202,47 @@ def duration_comment(days):
     else:
         return f"🌱 从{days}天前种下第一行代码，未来可期"
 
+def annual_project_comment(projects):
+    return "【年度项目成就评语待填写】"
+
+def annual_level_comment(lines):
+    return "【年度代码行数成就评语待填写】"
+
+def annual_keystroke_comment(keystrokes):
+    return "【年度键盘敲击成就评语待填写】"
+
+def annual_size_comment(size_human):
+    return "【年度体积成就评语待填写】"
+
+def annual_duration_comment(days):
+    return "【年度时长成就评语待填写】"
+
 # ---------- 输出函数 ----------
-def pretty_output(data):
+def pretty_output(data, mode="lifetime", year=None):
     summary = data["summary"]
     languages = data["languages"]
 
     # 时间跨度
-    now = datetime.datetime.now().timestamp()
-    days = int((now - summary["earliest_file_time"]) / 86400)
+    if summary["earliest_file_time"] and summary["latest_file_time"]:
+        if mode == "annual":
+            days = int((summary["latest_file_time"] - summary["earliest_file_time"]) / 86400)
+        else:
+            now = datetime.datetime.now().timestamp()
+            days = int((now - summary["earliest_file_time"]) / 86400)
+    else:
+        days = 0
     lines = summary["total_lines"]
     keystrokes = summary["keystrokes"]
     total_size_human = summary["total_size_human"]
     projects = summary["project_count"]
 
+    is_annual = mode == "annual"
+    title = "年度总结报告" if is_annual else "码农生涯成就报告"
+    date_line = f"> 🗓️ 年度：{year}\n" if is_annual else f"> 🗓️ 日期：{datetime.datetime.now().strftime('%Y-%m-%d')}\n"
+
     # Markdown 输出
-    md_output = f"""# 🎉 码农生涯成就报告
-> 🗓️ 日期：{datetime.datetime.now().strftime("%Y-%m-%d")}
-> 💾 最早的代码诞生于：{format_time(summary["earliest_file_time"])}
+    md_output = f"""# 🎉 {title}
+{date_line}> 💾 最早的代码诞生于：{format_time(summary["earliest_file_time"])}
 
 ## 📊 总览成就
 - 🧠 累计项目数：**{projects}**
@@ -217,11 +256,11 @@ def pretty_output(data):
 
 ## 💬 成就评语
 
-- {project_comment(projects)}
-- {level_comment(lines)}
-- {keystroke_comment(keystrokes)}
-- {size_comment(total_size_human)}
-- {duration_comment(days)}
+- {annual_project_comment(projects) if is_annual else project_comment(projects)}
+- {annual_level_comment(lines) if is_annual else level_comment(lines)}
+- {annual_keystroke_comment(keystrokes) if is_annual else keystroke_comment(keystrokes)}
+- {annual_size_comment(total_size_human) if is_annual else size_comment(total_size_human)}
+- {annual_duration_comment(days) if is_annual else duration_comment(days)}
 
 ---
 
@@ -237,19 +276,28 @@ def pretty_output(data):
 
     # 彩色输出
     if ENABLE_COLOR:
-        print(Fore.CYAN + "\n📊【码农生涯报告】\n" + Style.RESET_ALL)
+        header_title = "年度总结报告" if is_annual else "码农生涯报告"
+        print(Fore.CYAN + f"\n📊【{header_title}】\n" + Style.RESET_ALL)
         print(Fore.YELLOW + f"项目数量：{projects}")
         print(Fore.GREEN + f"总代码行数：{lines:,}")
         print(Fore.BLUE + f"总文件数：{summary['total_files']}")
         print(Fore.MAGENTA + f"累计体积：{total_size_human}")
         print(Fore.RED + f"键盘敲击：{keystrokes:,} 次")
         print(Fore.CYAN + f"历时：{days} 天")
-        print(Fore.WHITE + "\n💬 " + level_comment(lines))
-        print(Fore.WHITE + project_comment(projects))
-        print(Fore.WHITE + keystroke_comment(keystrokes))
-        print(Fore.WHITE + size_comment(total_size_human))
-        print(Fore.WHITE + duration_comment(days))
-        print(Fore.YELLOW + "\n\n🎯 新的一年，继续用代码改变世界吧！")
+        if is_annual:
+            print(Fore.WHITE + "\n💬 " + annual_level_comment(lines))
+            print(Fore.WHITE + annual_project_comment(projects))
+            print(Fore.WHITE + annual_keystroke_comment(keystrokes))
+            print(Fore.WHITE + annual_size_comment(total_size_human))
+            print(Fore.WHITE + annual_duration_comment(days))
+            print(Fore.YELLOW + "\n\n🎯 这一年辛苦啦，继续用代码改变世界吧！")
+        else:
+            print(Fore.WHITE + "\n💬 " + level_comment(lines))
+            print(Fore.WHITE + project_comment(projects))
+            print(Fore.WHITE + keystroke_comment(keystrokes))
+            print(Fore.WHITE + size_comment(total_size_human))
+            print(Fore.WHITE + duration_comment(days))
+            print(Fore.YELLOW + "\n\n🎯 新的一年，继续用代码改变世界吧！")
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -257,27 +305,44 @@ def pretty_output(data):
         os.makedirs(f"{current_dir}\\report")
 
     # Markdown 输出文件
+    report_tag = f"Annual_{year}" if is_annual else "Code"
+
     if EXPORT_MARKDOWN:
-        with open(f"{current_dir}\\report\Code_Report_{datetime.date.today()}.md", "w", encoding="utf-8") as f:
+        with open(f"{current_dir}\\report\{report_tag}_Report_{datetime.date.today()}.md", "w", encoding="utf-8") as f:
             f.write(md_output)
-        print(color(f"📦 已生成 Markdown 报告：\\report\Code_Report_{datetime.date.today()}.md", Fore.YELLOW))
+        print(color(f"📦 已生成 Markdown 报告：\\report\{report_tag}_Report_{datetime.date.today()}.md", Fore.YELLOW))
 
     # JSON 输出文件
     if EXPORT_JSON:
-        with open(f"{current_dir}\\report\Code_Report_{datetime.date.today()}.json", "w", encoding="utf-8") as f:
+        with open(f"{current_dir}\\report\{report_tag}_Report_{datetime.date.today()}.json", "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
-        print(color(f"📦 已生成 JSON 报告：\\report\Code_Report_{datetime.date.today()}.json", Fore.YELLOW))
+        print(color(f"📦 已生成 JSON 报告：\\report\{report_tag}_Report_{datetime.date.today()}.json", Fore.YELLOW))
 
 
 
 def main():
+    print("请选择统计模式：")
+    print("1. 生涯总结（多项目）")
+    print("2. 年度总结（指定年份）")
+    mode_choice = input("请输入模式编号：").strip() or "1"
+
     root_dir = input("请输入要统计的文件夹路径：").strip()
     if not os.path.exists(root_dir):
         print("❌ 文件夹不存在")
         return
 
     print(color("🚀 正在扫描你的代码宇宙...", Fore.CYAN))
-    project_stats, lang_stats, earliest_file_time = collect_stats(root_dir)
+    year = None
+    mode = "lifetime"
+    if mode_choice == "2":
+        mode = "annual"
+        year_input = input("请输入年度（如 2024）：").strip()
+        if not year_input.isdigit():
+            print("❌ 年度输入有误")
+            return
+        year = int(year_input)
+
+    project_stats, lang_stats, earliest_file_time, latest_file_time = collect_stats(root_dir, year=year)
 
     total_files = sum(p['file_count'] for p in project_stats.values())
     total_lines = sum(p['total_lines'] for p in project_stats.values())
@@ -292,6 +357,7 @@ def main():
         'total_size_human': human_size(total_size),
         'keystrokes': keystrokes,
         'earliest_file_time': earliest_file_time,
+        'latest_file_time': latest_file_time,
     }
 
     data = {
@@ -307,7 +373,7 @@ def main():
         "projects": project_stats,
     }
 
-    pretty_output(data)
+    pretty_output(data, mode=mode, year=year)
 
     print(color("\n🎉 Happy Programmer’s Day! 继续创造属于你的代码宇宙吧。\n", Fore.MAGENTA))
 
