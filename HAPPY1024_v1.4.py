@@ -63,72 +63,120 @@ def get_language(filename):
             return lang
     return None
 
-def collect_stats(root_dir, year=None):
+def parse_root_dirs(input_text):
+    parts = [p.strip() for p in re.split(r"[;,]+", input_text or "") if p.strip()]
+    return parts
+
+def _unique_project_name(project_stats, project_name, root_dir):
+    if project_name not in project_stats:
+        return project_name
+    root_tag = os.path.basename(os.path.abspath(root_dir)) or "root"
+    candidate = f"{project_name} ({root_tag})"
+    if candidate not in project_stats:
+        return candidate
+    counter = 2
+    while True:
+        candidate = f"{project_name} ({root_tag}-{counter})"
+        if candidate not in project_stats:
+            return candidate
+        counter += 1
+
+def collect_stats(root_dirs, year=None):
     project_stats = {}
     lang_stats = defaultdict(lambda: {'files': 0, 'size': 0, 'lines': 0})
     earliest_project_time = float('inf')
     latest_project_time = 0
+    visited_dirs = set()
+    visited_projects = set()
 
-    for project_name in os.listdir(root_dir):
-        project_path = os.path.join(root_dir, project_name)
-        if not os.path.isdir(project_path): continue
-        if not INCLUDE_HIDDEN and is_hidden(project_path): continue
+    if isinstance(root_dirs, str):
+        root_dirs = [root_dirs]
 
-        files_info = []
-        earliest_file_time = float('inf')
-        latest_file_time = 0
-
-        for dirpath, _, filenames in os.walk(project_path):
-            if not INCLUDE_HIDDEN and is_hidden(dirpath): continue
-            for file in filenames:
-                lang = get_language(file)
-                if not lang: continue
-                filepath = os.path.join(dirpath, file)
-                if not INCLUDE_HIDDEN and is_hidden(file): continue
-
-                stat = os.stat(filepath)
-                create_time = stat.st_ctime
-                if year:
-                    if datetime.datetime.fromtimestamp(create_time).year != year:
-                        continue
-                size = stat.st_size
-
-                files_info.append({
-                    'path': filepath,
-                    'name': file,
-                    'lang': lang,
-                    'size': size,
-                    'ctime': create_time
-                })
-                earliest_file_time = min(earliest_file_time, create_time)
-                latest_file_time = max(latest_file_time, create_time)
-
-        if MERGE_SIMILAR_FILES:
-            merged = {}
-            for f in files_info:
-                base = normalize_name(f['name'])
-                if base not in merged or merged[base]['ctime'] < f['ctime']:
-                    merged[base] = f
-            files_info = list(merged.values())
-
-        if not files_info:
+    for root_dir in root_dirs:
+        root_dir = os.path.abspath(root_dir)
+        if not os.path.isdir(root_dir):
             continue
+        for project_name in os.listdir(root_dir):
+            project_path = os.path.join(root_dir, project_name)
+            if not os.path.isdir(project_path):
+                continue
+            if not INCLUDE_HIDDEN and is_hidden(project_path):
+                continue
 
-        total_size = sum(f['size'] for f in files_info)
-        total_lines = sum(count_code_lines(f['path']) for f in files_info)
-        for f in files_info:
-            lang_stats[f['lang']]['files'] += 1
-            lang_stats[f['lang']]['size'] += f['size']
-            lang_stats[f['lang']]['lines'] += count_code_lines(f['path'])
+            project_realpath = os.path.realpath(project_path)
+            if project_realpath in visited_projects:
+                continue
+            visited_projects.add(project_realpath)
+            project_key = _unique_project_name(project_stats, project_name, root_dir)
 
-        project_stats[project_name] = {
-            'file_count': len(files_info),
-            'total_size': total_size,
-            'total_lines': total_lines,
-            'earliest_file_time': earliest_file_time
-        }
-        earliest_project_time = min(earliest_project_time, earliest_file_time)
-        latest_project_time = max(latest_project_time, latest_file_time)
+            files_info = []
+            earliest_file_time = float('inf')
+            latest_file_time = 0
+
+            for dirpath, dirnames, filenames in os.walk(project_path):
+                real_dirpath = os.path.realpath(dirpath)
+                if real_dirpath in visited_dirs:
+                    dirnames[:] = []
+                    continue
+                visited_dirs.add(real_dirpath)
+
+                if not INCLUDE_HIDDEN and is_hidden(dirpath):
+                    dirnames[:] = []
+                    continue
+                if not INCLUDE_HIDDEN:
+                    dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+
+                for file in filenames:
+                    lang = get_language(file)
+                    if not lang:
+                        continue
+                    filepath = os.path.join(dirpath, file)
+                    if not INCLUDE_HIDDEN and is_hidden(file):
+                        continue
+
+                    stat = os.stat(filepath)
+                    create_time = stat.st_ctime
+                    if year:
+                        if datetime.datetime.fromtimestamp(create_time).year != year:
+                            continue
+                    size = stat.st_size
+
+                    files_info.append({
+                        'path': filepath,
+                        'name': file,
+                        'lang': lang,
+                        'size': size,
+                        'ctime': create_time
+                    })
+                    earliest_file_time = min(earliest_file_time, create_time)
+                    latest_file_time = max(latest_file_time, create_time)
+
+            if MERGE_SIMILAR_FILES:
+                merged = {}
+                for f in files_info:
+                    base = normalize_name(f['name'])
+                    if base not in merged or merged[base]['ctime'] < f['ctime']:
+                        merged[base] = f
+                files_info = list(merged.values())
+
+            if not files_info:
+                continue
+
+            total_size = sum(f['size'] for f in files_info)
+            total_lines = sum(count_code_lines(f['path']) for f in files_info)
+            for f in files_info:
+                lang_stats[f['lang']]['files'] += 1
+                lang_stats[f['lang']]['size'] += f['size']
+                lang_stats[f['lang']]['lines'] += count_code_lines(f['path'])
+
+            project_stats[project_key] = {
+                'file_count': len(files_info),
+                'total_size': total_size,
+                'total_lines': total_lines,
+                'earliest_file_time': earliest_file_time
+            }
+            earliest_project_time = min(earliest_project_time, earliest_file_time)
+            latest_project_time = max(latest_project_time, latest_file_time)
 
     if earliest_project_time == float('inf'):
         earliest_project_time = None
@@ -326,9 +374,19 @@ def main():
     print("2. 年度总结（指定年份）")
     mode_choice = input("请输入模式编号：").strip() or "1"
 
-    root_dir = input("请输入要统计的文件夹路径：").strip()
-    if not os.path.exists(root_dir):
-        print("❌ 文件夹不存在")
+    root_input = input("请输入要统计的文件夹路径（多个用逗号/分号分隔）：").strip()
+    root_dirs = parse_root_dirs(root_input)
+    if not root_dirs:
+        print("❌ 未输入有效的文件夹路径")
+        return
+    valid_dirs = []
+    for path in root_dirs:
+        if os.path.exists(path):
+            valid_dirs.append(path)
+        else:
+            print(f"⚠️ 路径不存在，已跳过：{path}")
+    if not valid_dirs:
+        print("❌ 没有可用的文件夹路径")
         return
 
     print(color("🚀 正在扫描你的代码宇宙...", Fore.CYAN))
@@ -342,7 +400,7 @@ def main():
             return
         year = int(year_input)
 
-    project_stats, lang_stats, earliest_file_time, latest_file_time = collect_stats(root_dir, year=year)
+    project_stats, lang_stats, earliest_file_time, latest_file_time = collect_stats(valid_dirs, year=year)
 
     total_files = sum(p['file_count'] for p in project_stats.values())
     total_lines = sum(p['total_lines'] for p in project_stats.values())
