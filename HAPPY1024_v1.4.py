@@ -30,6 +30,8 @@ INCLUDE_HIDDEN = False          #是否包含隐藏文件/文件夹
 ENABLE_COLOR = True             #是否启用彩色输出
 EXPORT_MARKDOWN = True          #是否导出 Markdown 报告
 EXPORT_JSON = True              #是否导出 JSON 报告
+WORDCLOUD_TOP_K = 128           #词云统计 Top-K（默认128）
+WORDCLOUD_MAX_NGRAM = 2         #词组最大长度（1=仅单词，2=单词+双词组）
 # ==============================
 
 def color(text, c):
@@ -51,6 +53,91 @@ def count_code_lines(filepath):
             return sum(1 for line in f if line.strip())
     except Exception:
         return 0
+
+def tokenize_content(text):
+    """
+    提取用于词云统计的 token：
+    - 英文/数字/下划线标识符（长度>=2）
+    - 连续中文片段（长度>=2）
+    """
+    token_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fff]{2,}")
+    tokens = []
+    for raw in token_pattern.findall(text):
+        token = raw.lower().strip("_")
+        if len(token) >= 2:
+            tokens.append(token)
+    return tokens
+
+def collect_wordcloud(root_dirs, top_k=WORDCLOUD_TOP_K, max_ngram=WORDCLOUD_MAX_NGRAM, year=None):
+    """
+    统计代码中出现频次最高的单词和词组，输出可直接用于词云图的结构。
+    """
+    if isinstance(root_dirs, str):
+        root_dirs = [root_dirs]
+
+    top_k = max(1, int(top_k or WORDCLOUD_TOP_K))
+    max_ngram = max(1, int(max_ngram or 1))
+
+    token_counter = defaultdict(int)
+    visited_dirs = set()
+    visited_files = set()
+
+    for root_dir in root_dirs:
+        root_dir = os.path.abspath(root_dir)
+        if not os.path.isdir(root_dir):
+            continue
+
+        for dirpath, dirnames, filenames in os.walk(root_dir):
+            real_dirpath = os.path.realpath(dirpath)
+            if real_dirpath in visited_dirs:
+                dirnames[:] = []
+                continue
+            visited_dirs.add(real_dirpath)
+
+            if not INCLUDE_HIDDEN and is_hidden(dirpath):
+                dirnames[:] = []
+                continue
+            if not INCLUDE_HIDDEN:
+                dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+
+            for file in filenames:
+                if not INCLUDE_HIDDEN and is_hidden(file):
+                    continue
+                if not get_language(file):
+                    continue
+
+                filepath = os.path.join(dirpath, file)
+                real_filepath = os.path.realpath(filepath)
+                if real_filepath in visited_files:
+                    continue
+                visited_files.add(real_filepath)
+
+                try:
+                    stat = os.stat(filepath)
+                    create_time = stat.st_ctime
+                    if year and datetime.datetime.fromtimestamp(create_time).year != year:
+                        continue
+
+                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                        tokens = tokenize_content(f.read())
+                except Exception:
+                    continue
+
+                if not tokens:
+                    continue
+
+                for n in range(1, max_ngram + 1):
+                    if len(tokens) < n:
+                        break
+                    for i in range(len(tokens) - n + 1):
+                        phrase = " ".join(tokens[i:i + n])
+                        token_counter[phrase] += 1
+
+    ranking = sorted(token_counter.items(), key=lambda x: (-x[1], x[0]))[:top_k]
+    return [
+        {"text": text, "value": count}
+        for text, count in ranking
+    ]
 
 def normalize_name(filename):
     name = os.path.splitext(filename)[0]
@@ -400,7 +487,13 @@ def main():
             return
         year = int(year_input)
 
+    top_k_input = input(f"请输入词云 Top-K（默认 {WORDCLOUD_TOP_K}）：").strip()
+    max_ngram_input = input(f"请输入词组最大长度（1=单词，2=双词组，默认 {WORDCLOUD_MAX_NGRAM}）：").strip()
+    top_k = int(top_k_input) if top_k_input.isdigit() else WORDCLOUD_TOP_K
+    max_ngram = int(max_ngram_input) if max_ngram_input.isdigit() else WORDCLOUD_MAX_NGRAM
+
     project_stats, lang_stats, earliest_file_time, latest_file_time = collect_stats(valid_dirs, year=year)
+    wordcloud = collect_wordcloud(valid_dirs, top_k=top_k, max_ngram=max_ngram, year=year)
 
     total_files = sum(p['file_count'] for p in project_stats.values())
     total_lines = sum(p['total_lines'] for p in project_stats.values())
@@ -420,6 +513,11 @@ def main():
 
     data = {
         "summary": summary,
+        "wordcloud": {
+            "top_k": top_k,
+            "max_ngram": max_ngram,
+            "items": wordcloud
+        },
         "languages": {
             lang: {
                 "files": stat["files"],
